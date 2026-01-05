@@ -4,7 +4,7 @@
 | Document Information | |
 |---------------------|---|
 | **Document ID** | TS-SCM-TT-DIST-001 |
-| **Version** | 2.0 |
+| **Version** | 2.1 |
 | **Status** | Final |
 | **Created Date** | 2026-01-02 |
 | **Author** | SCM Development Team |
@@ -21,6 +21,7 @@
 |---------|------|--------|-------------|
 | 1.0 | 2025-12-01 | SCM Team | Initial version - Procedural approach |
 | 2.0 | 2026-01-02 | SCM Team | OOP refactoring, new data sources |
+| 2.1 | 2026-01-05 | SCM Team | Parallel cursor optimization for nested loops |
 
 ### 1.2 References
 
@@ -556,8 +557,107 @@ CALL METHOD /ui2/cl_json=>serialize
 | Technique | Implementation |
 |-----------|----------------|
 | Early Exit | CHECK/RETURN for empty tables |
-| Parallel Cursor | Sorted tables with BINARY SEARCH |
+| Parallel Cursor | Sorted tables with BINARY SEARCH and FROM index |
 | Single DB Call | Collect keys, single SELECT with FOR ALL ENTRIES |
+
+### 8.4 Parallel Cursor Technique
+
+**Purpose:** Replace nested `LOOP AT ... WHERE` clauses with optimized parallel cursor processing.
+
+**Problem with LOOP AT ... WHERE:**
+The WHERE clause in a nested loop performs a linear search (O(n)) for each iteration of the outer loop, resulting in O(n×m) complexity.
+
+```abap
+" BAD: Inefficient nested loop with WHERE clause
+LOOP AT lt_outer INTO lw_outer.
+  LOOP AT lt_inner INTO lw_inner WHERE key = lw_outer-key.
+    " Processing...
+  ENDLOOP.
+ENDLOOP.
+```
+
+**Solution - Parallel Cursor Technique:**
+1. Sort the inner table by the key field(s)
+2. Use READ TABLE with BINARY SEARCH to find the starting position (O(log n))
+3. Loop from that position using FROM clause
+4. Exit when the key value changes
+
+```abap
+" GOOD: Optimized parallel cursor technique
+SORT lt_inner BY key.
+DATA: lv_tabix TYPE sy-tabix.
+
+LOOP AT lt_outer INTO lw_outer.
+  " Find starting position using binary search
+  READ TABLE lt_inner TRANSPORTING NO FIELDS
+    WITH KEY key = lw_outer-key
+    BINARY SEARCH.
+
+  IF sy-subrc = 0.
+    lv_tabix = sy-tabix.
+
+    " Loop from starting position
+    LOOP AT lt_inner INTO lw_inner FROM lv_tabix.
+      " Exit when key changes
+      IF lw_inner-key <> lw_outer-key.
+        EXIT.
+      ENDIF.
+      
+      " Processing...
+    ENDLOOP.
+  ENDIF.
+ENDLOOP.
+```
+
+**Performance Comparison:**
+
+| Approach | Complexity | 1000×1000 Records |
+|----------|------------|-------------------|
+| LOOP AT ... WHERE | O(n×m) | ~1,000,000 iterations |
+| Parallel Cursor | O(n×log(m)+k) | ~10,000 iterations* |
+
+*k = actual matching records
+
+**Implementation in This Program:**
+
+The `validate_all_deliveries` method uses parallel cursor for validating shipment deliveries:
+
+```abap
+" Sort for parallel cursor
+SORT lt_ship_del BY tknum vbeln.
+
+" Validate each shipment using parallel cursor
+LOOP AT lt_tknum INTO lw_tknum.
+  " Find starting position for this shipment
+  READ TABLE lt_ship_del TRANSPORTING NO FIELDS
+    WITH KEY tknum = lw_tknum
+    BINARY SEARCH.
+
+  IF sy-subrc = 0.
+    lv_tabix = sy-tabix.
+
+    " Loop from starting position
+    LOOP AT lt_ship_del ASSIGNING <lfs_ship_del> FROM lv_tabix.
+      " Exit when shipment number changes
+      IF <lfs_ship_del>-tknum <> lw_tknum.
+        EXIT.
+      ENDIF.
+      
+      " Validate delivery...
+    ENDLOOP.
+  ENDIF.
+ENDLOOP.
+```
+
+**When to Use Parallel Cursor:**
+- Nested loops where inner loop has WHERE clause on a key field
+- Both tables have significant number of records (>100)
+- Same outer key may have multiple inner records
+
+**When NOT to Use:**
+- Simple READ TABLE lookups (1:1 relationship) - use BINARY SEARCH directly
+- Small tables (<100 records) - overhead may not be worth it
+- HASHED or SORTED tables - already optimized internally
 
 ---
 

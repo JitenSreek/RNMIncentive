@@ -5,7 +5,7 @@
 *&              each Transport Truck based on TD shipment data
 *& Author:      SCM Development Team
 *& Date:        2026-01-02
-*& Version:     2.0
+*& Version:     2.1
 *& Change Log:  v1.0 - Initial version with ZTRSTLMNT
 *&              v1.1 - Updated for TD Shipments, removed logging
 *&              v1.2 - Route fetched directly from ZTRSTLMNT table
@@ -15,6 +15,7 @@
 *&              v1.6 - Added REST API integration
 *&              v2.0 - Refactored to OOP, new shipment selection logic
 *&                     (YTTSPOD->VBRP->OIGSI), Distance from OIGSS
+*&              v2.1 - Parallel cursor optimization for nested loops
 *&---------------------------------------------------------------------*
 REPORT zscm_monthly_tt_distance.
 
@@ -643,44 +644,59 @@ CLASS lcl_report IMPLEMENTATION.
         WHERE billno = lt_bill_from_vbrp-table_line.
     ENDIF.
 
-    " Sort for binary search
+    " Sort for parallel cursor and binary search
     SORT lt_ship_del BY tknum vbeln.
     SORT lt_vbrp_all BY vgbel.
     SORT lt_pod_check BY billno.
 
-    " Validate each shipment
+    " Variables for parallel cursor
+    DATA: lv_tabix TYPE sy-tabix.
+
+    " Validate each shipment using parallel cursor technique
     LOOP AT lt_tknum INTO lw_tknum.
       lv_all_valid = abap_true.
 
-      " Get all deliveries for this shipment
-      LOOP AT lt_ship_del ASSIGNING <lfs_ship_del>
-        WHERE tknum = lw_tknum.
+      " Find starting position for this shipment using binary search
+      READ TABLE lt_ship_del TRANSPORTING NO FIELDS
+        WITH KEY tknum = lw_tknum
+        BINARY SEARCH.
 
-        " Find billing doc for this delivery
-        READ TABLE lt_vbrp_all ASSIGNING <lfs_vbrp_all>
-          WITH KEY vgbel = <lfs_ship_del>-vbeln
-          BINARY SEARCH.
+      IF sy-subrc = 0.
+        lv_tabix = sy-tabix.
 
-        IF sy-subrc = 0.
-          " Check POD status for billing doc
-          READ TABLE lt_pod_check ASSIGNING <lfs_pod>
-            WITH KEY billno = <lfs_vbrp_all>-vbeln
+        " Loop from starting position (parallel cursor)
+        LOOP AT lt_ship_del ASSIGNING <lfs_ship_del> FROM lv_tabix.
+          " Exit when shipment number changes
+          IF <lfs_ship_del>-tknum <> lw_tknum.
+            EXIT.
+          ENDIF.
+
+          " Find billing doc for this delivery
+          READ TABLE lt_vbrp_all ASSIGNING <lfs_vbrp_all>
+            WITH KEY vgbel = <lfs_ship_del>-vbeln
             BINARY SEARCH.
 
           IF sy-subrc = 0.
-            " Check if RO_OUT_DATE is in range and conditions met
-            IF <lfs_pod>-ro_out_date < gv_first_day OR
-               <lfs_pod>-ro_out_date > gv_last_day.
+            " Check POD status for billing doc
+            READ TABLE lt_pod_check ASSIGNING <lfs_pod>
+              WITH KEY billno = <lfs_vbrp_all>-vbeln
+              BINARY SEARCH.
+
+            IF sy-subrc = 0.
+              " Check if RO_OUT_DATE is in range and conditions met
+              IF <lfs_pod>-ro_out_date < gv_first_day OR
+                 <lfs_pod>-ro_out_date > gv_last_day.
+                lv_all_valid = abap_false.
+                EXIT.
+              ENDIF.
+            ELSE.
+              " POD record not found for this billing doc
               lv_all_valid = abap_false.
               EXIT.
             ENDIF.
-          ELSE.
-            " POD record not found for this billing doc
-            lv_all_valid = abap_false.
-            EXIT.
           ENDIF.
-        ENDIF.
-      ENDLOOP.
+        ENDLOOP.
+      ENDIF.
 
       IF lv_all_valid = abap_true.
         APPEND lw_tknum TO lt_valid_tknum.
