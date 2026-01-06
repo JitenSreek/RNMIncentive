@@ -11,7 +11,7 @@
 *&              v1.2 - Route fetched directly from ZTRSTLMNT table
 *&              v1.3 - Route from OIGSV, Distance from TVRO
 *&              v1.4 - Variant name defined as constant
-*&              v1.5 - Added child table ZSCM_MONTH_TT_DET
+*&              v1.5 - Added child table ZSCM_MTH_TT_DET
 *&              v1.6 - Added REST API integration
 *&              v2.0 - Refactored to OOP, new shipment selection logic
 *&                     (YTTSPOD->VBRP->OIGSI), Distance from OIGSS
@@ -978,14 +978,14 @@ CLASS lcl_report IMPLEMENTATION.
 * SAVE_TO_DATABASE
 *----------------------------------------------------------------------*
   METHOD save_to_database.
-    DATA: lw_db     TYPE zscm_month_tt_dist,
-          lt_db     TYPE STANDARD TABLE OF zscm_month_tt_dist,
-          lt_exist  TYPE STANDARD TABLE OF zscm_month_tt_dist,
-          lw_det    TYPE zscm_month_tt_det,
-          lt_det    TYPE STANDARD TABLE OF zscm_month_tt_det.
+    DATA: lw_db     TYPE zscm_mth_tt_dist,
+          lt_db     TYPE STANDARD TABLE OF zscm_mth_tt_dist,
+          lt_exist  TYPE STANDARD TABLE OF zscm_mth_tt_dist,
+          lw_det    TYPE zscm_mth_tt_det,
+          lt_det    TYPE STANDARD TABLE OF zscm_mth_tt_det.
 
     FIELD-SYMBOLS: <lfs_out>   TYPE gty_output,
-                   <lfs_exist> TYPE zscm_month_tt_dist,
+                   <lfs_exist> TYPE zscm_mth_tt_dist,
                    <lfs_det>   TYPE gty_detail.
 
     CHECK gt_output IS NOT INITIAL.
@@ -994,7 +994,7 @@ CLASS lcl_report IMPLEMENTATION.
     SELECT mandt vehl_no gjahr monat total_distance distance_unit
            trip_count lifnr created_by created_on created_tm
            changed_by changed_on changed_tm
-      FROM zscm_month_tt_dist
+      FROM zscm_mth_tt_dist
       INTO TABLE lt_exist
       WHERE gjahr = p_gjahr
         AND monat = p_monat.
@@ -1071,12 +1071,12 @@ CLASS lcl_report IMPLEMENTATION.
     ENDLOOP.
 
     " Delete existing detail records for the month
-    DELETE FROM zscm_month_tt_det
+    DELETE FROM zscm_mth_tt_det
       WHERE gjahr = p_gjahr
         AND monat = p_monat.
 
     " Modify header table (insert or update)
-    MODIFY zscm_month_tt_dist FROM TABLE lt_db.
+    MODIFY zscm_mth_tt_dist FROM TABLE lt_db.
 
     IF sy-subrc <> 0.
       ROLLBACK WORK.
@@ -1085,7 +1085,7 @@ CLASS lcl_report IMPLEMENTATION.
 
     " Insert detail records
     IF lt_det IS NOT INITIAL.
-      INSERT zscm_month_tt_det FROM TABLE lt_det.
+      INSERT zscm_mth_tt_det FROM TABLE lt_det.
 
       IF sy-subrc <> 0.
         ROLLBACK WORK.
@@ -1101,7 +1101,7 @@ CLASS lcl_report IMPLEMENTATION.
 * SEND_DATA_TO_API
 *----------------------------------------------------------------------*
   METHOD send_data_to_api.
-    DATA: lt_api_data TYPE STANDARD TABLE OF zscm_month_tt_dist,
+    DATA: lt_api_data TYPE STANDARD TABLE OF zscm_mth_tt_dist,
           lv_json     TYPE string.
 
     " Skip if API URL is not configured
@@ -1114,7 +1114,7 @@ CLASS lcl_report IMPLEMENTATION.
     SELECT mandt vehl_no gjahr monat total_distance distance_unit
            trip_count lifnr created_by created_on created_tm
            changed_by changed_on changed_tm
-      FROM zscm_month_tt_dist
+      FROM zscm_mth_tt_dist
       INTO TABLE lt_api_data
       WHERE gjahr = p_gjahr
         AND monat = p_monat.
@@ -1139,7 +1139,7 @@ CLASS lcl_report IMPLEMENTATION.
 * PREPARE_JSON_FROM_DB
 *----------------------------------------------------------------------*
   METHOD prepare_json_from_db.
-    DATA: lw_record     TYPE zscm_month_tt_dist,
+    DATA: lw_record     TYPE zscm_mth_tt_dist,
           lt_records    TYPE STANDARD TABLE OF gty_api_record,
           lw_api_rec    TYPE gty_api_record,
           lw_api_req    TYPE gty_api_request,
@@ -1149,7 +1149,7 @@ CLASS lcl_report IMPLEMENTATION.
           lv_month      TYPE char2,
           lo_error      TYPE REF TO cx_root.
 
-    FIELD-SYMBOLS: <lfs_record> TYPE zscm_month_tt_dist.
+    FIELD-SYMBOLS: <lfs_record> TYPE zscm_mth_tt_dist.
 
     CLEAR rv_json.
 

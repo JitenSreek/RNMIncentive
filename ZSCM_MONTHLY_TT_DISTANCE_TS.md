@@ -104,7 +104,7 @@
 
 ### 3.1 Custom Tables
 
-#### 3.1.1 ZSCM_MONTH_TT_DIST (Header Table)
+#### 3.1.1 ZSCM_MTH_TT_DIST (Header Table)
 
 | Field | Data Element | Type | Length | Dec | Key | Description |
 |-------|--------------|------|--------|-----|-----|-------------|
@@ -129,7 +129,7 @@
 - Size Category: 2
 - Buffering: Not buffered
 
-#### 3.1.2 ZSCM_MONTH_TT_DET (Detail Table)
+#### 3.1.2 ZSCM_MTH_TT_DET (Detail Table)
 
 | Field | Data Element | Type | Length | Dec | Key | Description |
 |-------|--------------|------|--------|-----|-----|-------------|
@@ -155,8 +155,8 @@
 - Buffering: Not buffered
 
 **Secondary Indexes:**
-- ZSCM_MONTH_TT_DET~01: TKNUM
-- ZSCM_MONTH_TT_DET~02: RO_OUT_DATE
+- ZSCM_MTH_TT_DET~01: TKNUM
+- ZSCM_MTH_TT_DET~02: RO_OUT_DATE
 
 ### 3.2 Custom Data Elements
 
@@ -469,9 +469,9 @@ END
 
 | Operation | Table | Method |
 |-----------|-------|--------|
-| DELETE | ZSCM_MONTH_TT_DET | DELETE FROM WHERE gjahr = p_gjahr AND monat = p_monat |
-| MODIFY | ZSCM_MONTH_TT_DIST | MODIFY FROM TABLE lt_db |
-| INSERT | ZSCM_MONTH_TT_DET | INSERT FROM TABLE lt_det |
+| DELETE | ZSCM_MTH_TT_DET | DELETE FROM WHERE gjahr = p_gjahr AND monat = p_monat |
+| MODIFY | ZSCM_MTH_TT_DIST | MODIFY FROM TABLE lt_db |
+| INSERT | ZSCM_MTH_TT_DET | INSERT FROM TABLE lt_det |
 | COMMIT | All | COMMIT WORK AND WAIT |
 | ROLLBACK | All | ROLLBACK WORK (on error) |
 
@@ -716,8 +716,8 @@ ENDLOOP.
 | DTEL | ZDIST_TOT | Data Element - Total Distance |
 | DTEL | ZTRIP_CNT | Data Element - Trip Count |
 | DTEL | ZDIST_SHIP | Data Element - Shipment Distance |
-| TABL | ZSCM_MONTH_TT_DIST | Header Table |
-| TABL | ZSCM_MONTH_TT_DET | Detail Table |
+| TABL | ZSCM_MTH_TT_DIST | Header Table |
+| TABL | ZSCM_MTH_TT_DET | Detail Table |
 | PROG | ZSCM_MONTHLY_TT_DISTANCE | ABAP Program |
 | TRAN | ZTTDIST | Transaction Code |
 
