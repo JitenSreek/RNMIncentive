@@ -5,7 +5,7 @@
 *&              each Transport Truck based on TD shipment data
 *& Author:      SCM Development Team
 *& Date:        2026-01-02
-*& Version:     2.1
+*& Version:     2.2
 *& Change Log:  v1.0 - Initial version with ZTRSTLMNT
 *&              v1.1 - Updated for TD Shipments, removed logging
 *&              v1.2 - Route fetched directly from ZTRSTLMNT table
@@ -16,6 +16,7 @@
 *&              v2.0 - Refactored to OOP, new shipment selection logic
 *&                     (YTTSPOD->VBRP->OIGSI), Distance from OIGSS
 *&              v2.1 - Parallel cursor optimization for nested loops
+*&              v2.2 - Code review: declarations at top, BINARY SEARCH
 *&---------------------------------------------------------------------*
 REPORT zscm_monthly_tt_distance.
 
@@ -288,7 +289,6 @@ CLASS lcl_report IMPLEMENTATION.
       me->send_data_to_api( ).
     ELSE.
       " Mark all as Test Mode
-      DATA: lw_output TYPE gty_output.
       FIELD-SYMBOLS: <lfs_output> TYPE gty_output.
 
       LOOP AT gt_output ASSIGNING <lfs_output>.
@@ -573,14 +573,20 @@ CLASS lcl_report IMPLEMENTATION.
           lt_pod_check      TYPE STANDARD TABLE OF gty_pod,
           lt_valid_tknum    TYPE STANDARD TABLE OF tknum,
           lt_invalid_tknum  TYPE STANDARD TABLE OF tknum,
+          lt_bill_from_vbrp TYPE STANDARD TABLE OF vbeln_vf,
+          lt_vbrp_all       TYPE STANDARD TABLE OF gty_vbrp,
+          lt_oigsi_filtered TYPE STANDARD TABLE OF gty_oigsi,
           lw_tknum          TYPE tknum,
           lw_vbeln          TYPE vbeln_vl,
+          lw_billno         TYPE vbeln_vf,
           lv_all_valid      TYPE abap_bool,
-          lv_found          TYPE abap_bool.
+          lv_found          TYPE abap_bool,
+          lv_tabix          TYPE sy-tabix.
 
     FIELD-SYMBOLS: <lfs_oigsi>    TYPE gty_oigsi,
                    <lfs_ship_del> TYPE gty_oigsi,
-                   <lfs_pod>      TYPE gty_pod.
+                   <lfs_pod>      TYPE gty_pod,
+                   <lfs_vbrp_all> TYPE gty_vbrp.
 
     CHECK mt_oigsi IS NOT INITIAL.
 
@@ -612,12 +618,6 @@ CLASS lcl_report IMPLEMENTATION.
     DELETE ADJACENT DUPLICATES FROM lt_all_deliveries.
 
     " Get billing documents for all deliveries from VBRP
-    DATA: lt_bill_from_vbrp TYPE STANDARD TABLE OF vbeln_vf,
-          lt_vbrp_all       TYPE STANDARD TABLE OF gty_vbrp,
-          lw_billno         TYPE vbeln_vf.
-
-    FIELD-SYMBOLS: <lfs_vbrp_all> TYPE gty_vbrp.
-
     IF lt_all_deliveries IS NOT INITIAL.
       SELECT vbeln vgbel
         FROM vbrp
@@ -648,9 +648,6 @@ CLASS lcl_report IMPLEMENTATION.
     SORT lt_ship_del BY tknum vbeln.
     SORT lt_vbrp_all BY vgbel.
     SORT lt_pod_check BY billno.
-
-    " Variables for parallel cursor
-    DATA: lv_tabix TYPE sy-tabix.
 
     " Validate each shipment using parallel cursor technique
     LOOP AT lt_tknum INTO lw_tknum.
@@ -707,8 +704,6 @@ CLASS lcl_report IMPLEMENTATION.
     ENDLOOP.
 
     " Filter mt_oigsi to keep only valid shipments
-    DATA: lt_oigsi_filtered TYPE STANDARD TABLE OF gty_oigsi.
-
     SORT lt_valid_tknum.
 
     LOOP AT mt_oigsi ASSIGNING <lfs_oigsi>.
@@ -730,7 +725,8 @@ CLASS lcl_report IMPLEMENTATION.
   METHOD get_distances_from_oigss.
     DATA: lt_tknum      TYPE STANDARD TABLE OF tknum,
           lt_oigss_all  TYPE STANDARD TABLE OF gty_oigss,
-          lw_tknum      TYPE tknum.
+          lw_tknum      TYPE tknum,
+          lv_prev_tknum TYPE tknum.
 
     FIELD-SYMBOLS: <lfs_oigsi>     TYPE gty_oigsi,
                    <lfs_oigss>     TYPE gty_oigss,
@@ -762,7 +758,6 @@ CLASS lcl_report IMPLEMENTATION.
     SORT lt_oigss_all BY tknum.
 
     " Keep only first record per shipment
-    DATA: lv_prev_tknum TYPE tknum.
     CLEAR lv_prev_tknum.
 
     LOOP AT lt_oigss_all ASSIGNING <lfs_oigss_all>.
@@ -866,19 +861,24 @@ CLASS lcl_report IMPLEMENTATION.
 * AGGREGATE_DISTANCE
 *----------------------------------------------------------------------*
   METHOD aggregate_distance.
-    DATA: lt_work    TYPE STANDARD TABLE OF gty_output,
-          lw_work    TYPE gty_output,
-          lw_detail  TYPE gty_detail,
-          lw_vc      TYPE gty_vendor_count.
+    DATA: lt_work       TYPE STANDARD TABLE OF gty_output,
+          lt_vendor_agg TYPE STANDARD TABLE OF gty_vendor_count,
+          lw_work       TYPE gty_output,
+          lw_detail     TYPE gty_detail,
+          lw_vc         TYPE gty_vendor_count.
 
-    FIELD-SYMBOLS: <lfs_ship>   TYPE gty_shipment,
-                   <lfs_work>   TYPE gty_output,
-                   <lfs_vc>     TYPE gty_vendor_count.
+    FIELD-SYMBOLS: <lfs_ship> TYPE gty_shipment,
+                   <lfs_work> TYPE gty_output,
+                   <lfs_vc>   TYPE gty_vendor_count,
+                   <lfs_agg>  TYPE gty_vendor_count.
 
     CHECK mt_shipments IS NOT INITIAL.
 
     " Clear output tables
     CLEAR: gt_output, gt_details, mt_vendor_count.
+
+    " Sort shipments by truck_no for optimized processing
+    SORT mt_shipments BY truck_no tknum.
 
     " Process each shipment
     LOOP AT mt_shipments ASSIGNING <lfs_ship>.
@@ -897,8 +897,11 @@ CLASS lcl_report IMPLEMENTATION.
       APPEND lw_detail TO gt_details.
 
       " Check if vehicle already exists in work table
+      " Note: lt_work is sorted after each APPEND for BINARY SEARCH
+      SORT lt_work BY vehl_no.
       READ TABLE lt_work ASSIGNING <lfs_work>
-        WITH KEY vehl_no = <lfs_ship>-truck_no.
+        WITH KEY vehl_no = <lfs_ship>-truck_no
+        BINARY SEARCH.
 
       IF sy-subrc = 0.
         " Update existing vehicle record
@@ -928,18 +931,16 @@ CLASS lcl_report IMPLEMENTATION.
     " Determine primary vendor for each vehicle
     me->determine_primary_vendor( ).
 
-    " Update vendor in work table
-    DATA: lt_vendor_agg TYPE STANDARD TABLE OF gty_vendor_count.
-
-    FIELD-SYMBOLS: <lfs_agg> TYPE gty_vendor_count.
-
     " Aggregate vendor counts
     SORT mt_vendor_count BY vehl_no lifnr.
 
     LOOP AT mt_vendor_count ASSIGNING <lfs_vc>.
+      " Sort before BINARY SEARCH
+      SORT lt_vendor_agg BY vehl_no lifnr.
       READ TABLE lt_vendor_agg ASSIGNING <lfs_agg>
         WITH KEY vehl_no = <lfs_vc>-vehl_no
-                 lifnr   = <lfs_vc>-lifnr.
+                 lifnr   = <lfs_vc>-lifnr
+        BINARY SEARCH.
       IF sy-subrc = 0.
         <lfs_agg>-count = <lfs_agg>-count + 1.
       ELSE.
@@ -950,11 +951,12 @@ CLASS lcl_report IMPLEMENTATION.
       ENDIF.
     ENDLOOP.
 
-    " Sort by count descending to get primary vendor
+    " Sort by count descending to get primary vendor (highest count first)
     SORT lt_vendor_agg BY vehl_no count DESCENDING.
 
     " Update work table with primary vendor
     LOOP AT lt_work ASSIGNING <lfs_work>.
+      " Note: Already sorted by vehl_no count DESCENDING, first match is primary
       READ TABLE lt_vendor_agg ASSIGNING <lfs_agg>
         WITH KEY vehl_no = <lfs_work>-vehl_no.
       IF sy-subrc = 0.
@@ -1218,6 +1220,7 @@ CLASS lcl_report IMPLEMENTATION.
           lv_status      TYPE i,
           lv_reason      TYPE string,
           lv_length      TYPE i,
+          lv_len_str     TYPE string,
           lo_error       TYPE REF TO cx_root.
 
     " Build complete API URL
@@ -1252,7 +1255,6 @@ CLASS lcl_report IMPLEMENTATION.
         lo_http_client->request->set_cdata( iv_json ).
 
         " Convert length to string for header
-        DATA: lv_len_str TYPE string.
         lv_len_str = lv_length.
         CONDENSE lv_len_str NO-GAPS.
 
