@@ -170,6 +170,7 @@ SELECTION-SCREEN END OF BLOCK b2.
 
 SELECTION-SCREEN BEGIN OF BLOCK b3 WITH FRAME TITLE text-003.
   PARAMETERS:     p_test  AS CHECKBOX DEFAULT ' '.
+  PARAMETERS:     p_view  AS CHECKBOX DEFAULT ' '.
 SELECTION-SCREEN END OF BLOCK b3.
 
 *----------------------------------------------------------------------*
@@ -179,6 +180,7 @@ CLASS lcl_report DEFINITION.
   PUBLIC SECTION.
     METHODS: constructor,
              validate_input,
+             validate_vehicle_mandatory,
              execute,
              display_output.
 
@@ -207,12 +209,14 @@ CLASS lcl_report DEFINITION.
              determine_primary_vendor,
              save_to_database,
              send_data_to_api,
+             fetch_from_database,
              prepare_json_from_db
                IMPORTING it_data       TYPE STANDARD TABLE
                RETURNING VALUE(rv_json) TYPE string,
              call_rest_api
                IMPORTING iv_json TYPE string,
              display_alv,
+             display_alv_details,
              display_summary.
 
 ENDCLASS.
@@ -247,9 +251,43 @@ CLASS lcl_report IMPLEMENTATION.
   ENDMETHOD.
 
 *----------------------------------------------------------------------*
+* VALIDATE_VEHICLE_MANDATORY
+*----------------------------------------------------------------------*
+*& Validate that vehicle selection is provided when View Details is selected
+*----------------------------------------------------------------------*
+  METHOD validate_vehicle_mandatory.
+    DATA: lv_vehl_found TYPE abap_bool.
+
+    " When View Details is selected, Vehicle must be mandatory
+    IF p_view = abap_true.
+      " Check if vehicle selection has at least one non-empty entry
+      lv_vehl_found = abap_false.
+
+      IF s_vehl IS NOT INITIAL.
+        LOOP AT s_vehl TRANSPORTING NO FIELDS
+          WHERE low <> space
+             OR high <> space.
+          lv_vehl_found = abap_true.
+          EXIT.
+        ENDLOOP.
+      ENDIF.
+
+      IF lv_vehl_found = abap_false.
+        MESSAGE e001(00) WITH 'Vehicle selection is mandatory when View Details is selected.'.
+      ENDIF.
+    ENDIF.
+  ENDMETHOD.
+
+*----------------------------------------------------------------------*
 * EXECUTE - Main processing method
 *----------------------------------------------------------------------*
   METHOD execute.
+    " If View Details is selected, fetch from database and skip processing
+    IF p_view = abap_true.
+      me->fetch_from_database( ).
+      RETURN.
+    ENDIF.
+
     " Step 1: Calculate date range for the month
     me->calculate_date_range( ).
 
@@ -977,6 +1015,109 @@ CLASS lcl_report IMPLEMENTATION.
   ENDMETHOD.
 
 *----------------------------------------------------------------------*
+* FETCH_FROM_DATABASE
+*----------------------------------------------------------------------*
+*& Fetch data from both header and detail tables for View Details mode
+*----------------------------------------------------------------------*
+  METHOD fetch_from_database.
+    DATA: lt_db_header TYPE STANDARD TABLE OF zscm_mth_tt_dist,
+          lt_db_detail TYPE STANDARD TABLE OF zscm_mth_tt_det,
+          lw_output    TYPE gty_output,
+          lw_detail    TYPE gty_detail,
+          lv_vehl_found TYPE abap_bool.
+
+    FIELD-SYMBOLS: <lfs_header> TYPE zscm_mth_tt_dist,
+                   <lfs_detail> TYPE zscm_mth_tt_det.
+
+    " Clear output tables
+    CLEAR: gt_output, gt_details.
+
+    " Validate vehicle selection is provided (should be validated in AT SELECTION-SCREEN)
+    lv_vehl_found = abap_false.
+    IF s_vehl IS NOT INITIAL.
+      LOOP AT s_vehl TRANSPORTING NO FIELDS
+        WHERE low <> space
+           OR high <> space.
+        lv_vehl_found = abap_true.
+        EXIT.
+      ENDLOOP.
+    ENDIF.
+
+    IF lv_vehl_found = abap_false.
+      MESSAGE e001(00) WITH 'Vehicle selection is mandatory when View Details is selected.'.
+      RETURN.
+    ENDIF.
+
+    " Fetch header records from ZSCM_MTH_TT_DIST
+    SELECT mandt vehl_no gjahr monat total_distance distance_unit
+           trip_count lifnr created_by created_on created_tm
+           changed_by changed_on changed_tm
+      FROM zscm_mth_tt_dist
+      INTO TABLE lt_db_header
+      WHERE gjahr = p_gjahr
+        AND monat = p_monat
+        AND vehl_no IN s_vehl.
+
+    IF sy-subrc <> 0 OR lt_db_header IS INITIAL.
+      MESSAGE s001(00) WITH 'No data found in header table for the selection criteria' DISPLAY LIKE 'I'.
+      RETURN.
+    ENDIF.
+
+    " Convert header records to output format
+    LOOP AT lt_db_header ASSIGNING <lfs_header>.
+      CLEAR lw_output.
+      lw_output-vehl_no        = <lfs_header>-vehl_no.
+      lw_output-gjahr          = <lfs_header>-gjahr.
+      lw_output-monat          = <lfs_header>-monat.
+      lw_output-total_distance = <lfs_header>-total_distance.
+      lw_output-distance_unit  = <lfs_header>-distance_unit.
+      lw_output-trip_count     = <lfs_header>-trip_count.
+      lw_output-lifnr          = <lfs_header>-lifnr.
+      lw_output-status         = 'View Details'.
+      lw_output-created_by     = <lfs_header>-created_by.
+      lw_output-created_on     = <lfs_header>-created_on.
+      lw_output-created_tm     = <lfs_header>-created_tm.
+      lw_output-changed_by     = <lfs_header>-changed_by.
+      lw_output-changed_on     = <lfs_header>-changed_on.
+      lw_output-changed_tm     = <lfs_header>-changed_tm.
+      APPEND lw_output TO gt_output.
+    ENDLOOP.
+
+    " Fetch detail records from ZSCM_MTH_TT_DET
+    SELECT mandt vehl_no gjahr monat tknum mfrgr lifnr ro_out_date
+           route distance distance_unit created_by created_on created_tm
+      FROM zscm_mth_tt_det
+      INTO TABLE lt_db_detail
+      WHERE gjahr = p_gjahr
+        AND monat = p_monat
+        AND vehl_no IN s_vehl.
+
+    IF sy-subrc = 0 AND lt_db_detail IS NOT INITIAL.
+      " Convert detail records to detail format
+      LOOP AT lt_db_detail ASSIGNING <lfs_detail>.
+        CLEAR lw_detail.
+        lw_detail-vehl_no       = <lfs_detail>-vehl_no.
+        lw_detail-gjahr         = <lfs_detail>-gjahr.
+        lw_detail-monat         = <lfs_detail>-monat.
+        lw_detail-tknum         = <lfs_detail>-tknum.
+        lw_detail-mfrgr         = <lfs_detail>-mfrgr.
+        lw_detail-lifnr         = <lfs_detail>-lifnr.
+        lw_detail-ro_out_date   = <lfs_detail>-ro_out_date.
+        lw_detail-route         = <lfs_detail>-route.
+        lw_detail-distance      = <lfs_detail>-distance.
+        lw_detail-distance_unit = <lfs_detail>-distance_unit.
+        APPEND lw_detail TO gt_details.
+      ENDLOOP.
+      gv_details_cnt = lines( gt_details ).
+    ENDIF.
+
+    " Set record counts for display
+    gv_records_new  = 0.
+    gv_records_upd  = 0.
+    gv_records_skip = 0.
+  ENDMETHOD.
+
+*----------------------------------------------------------------------*
 * SAVE_TO_DATABASE
 *----------------------------------------------------------------------*
   METHOD save_to_database.
@@ -1321,7 +1462,16 @@ CLASS lcl_report IMPLEMENTATION.
 * DISPLAY_OUTPUT
 *----------------------------------------------------------------------*
   METHOD display_output.
-    me->display_alv( ).
+    IF p_view = abap_true.
+      " Display both header and detail ALV when View Details is selected
+      me->display_alv( ).
+      IF gt_details IS NOT INITIAL.
+        me->display_alv_details( ).
+      ENDIF.
+    ELSE.
+      " Normal display - only header
+      me->display_alv( ).
+    ENDIF.
     me->display_summary( ).
   ENDMETHOD.
 
@@ -1429,6 +1579,105 @@ CLASS lcl_report IMPLEMENTATION.
   ENDMETHOD.
 
 *----------------------------------------------------------------------*
+* DISPLAY_ALV_DETAILS
+*----------------------------------------------------------------------*
+  METHOD display_alv_details.
+    DATA: lo_alv       TYPE REF TO cl_salv_table,
+          lo_columns   TYPE REF TO cl_salv_columns_table,
+          lo_column    TYPE REF TO cl_salv_column,
+          lo_functions TYPE REF TO cl_salv_functions_list,
+          lo_display   TYPE REF TO cl_salv_display_settings,
+          lo_msg       TYPE REF TO cx_salv_msg,
+          lo_not_found TYPE REF TO cx_salv_not_found.
+
+    CHECK gt_details IS NOT INITIAL.
+
+    TRY.
+        " Create ALV instance
+        cl_salv_table=>factory(
+          IMPORTING
+            r_salv_table = lo_alv
+          CHANGING
+            t_table      = gt_details ).
+
+        " Get columns object
+        lo_columns = lo_alv->get_columns( ).
+        lo_columns->set_optimize( abap_true ).
+
+        " Set column texts
+        TRY.
+            lo_column = lo_columns->get_column( 'VEHL_NO' ).
+            lo_column->set_short_text( 'Vehicle' ).
+            lo_column->set_medium_text( 'Vehicle No' ).
+            lo_column->set_long_text( 'Vehicle/Truck Number' ).
+
+            lo_column = lo_columns->get_column( 'GJAHR' ).
+            lo_column->set_short_text( 'Year' ).
+            lo_column->set_medium_text( 'Fiscal Year' ).
+            lo_column->set_long_text( 'Fiscal Year' ).
+
+            lo_column = lo_columns->get_column( 'MONAT' ).
+            lo_column->set_short_text( 'Month' ).
+            lo_column->set_medium_text( 'Month' ).
+            lo_column->set_long_text( 'Month' ).
+
+            lo_column = lo_columns->get_column( 'TKNUM' ).
+            lo_column->set_short_text( 'Shipment' ).
+            lo_column->set_medium_text( 'Shipment No' ).
+            lo_column->set_long_text( 'Shipment Number' ).
+
+            lo_column = lo_columns->get_column( 'MFRGR' ).
+            lo_column->set_short_text( 'MFRGR' ).
+            lo_column->set_medium_text( 'Material Freight Group' ).
+            lo_column->set_long_text( 'Material Freight Group' ).
+
+            lo_column = lo_columns->get_column( 'LIFNR' ).
+            lo_column->set_short_text( 'Vendor' ).
+            lo_column->set_medium_text( 'Vendor Code' ).
+            lo_column->set_long_text( 'Transporter Vendor' ).
+
+            lo_column = lo_columns->get_column( 'RO_OUT_DATE' ).
+            lo_column->set_short_text( 'RO Date' ).
+            lo_column->set_medium_text( 'RO Out Date' ).
+            lo_column->set_long_text( 'RO Out Date' ).
+
+            lo_column = lo_columns->get_column( 'ROUTE' ).
+            lo_column->set_short_text( 'Route' ).
+            lo_column->set_medium_text( 'Route Code' ).
+            lo_column->set_long_text( 'Route Code' ).
+
+            lo_column = lo_columns->get_column( 'DISTANCE' ).
+            lo_column->set_short_text( 'Distance' ).
+            lo_column->set_medium_text( 'Shipment Distance' ).
+            lo_column->set_long_text( 'Shipment Distance' ).
+
+            lo_column = lo_columns->get_column( 'DISTANCE_UNIT' ).
+            lo_column->set_short_text( 'Unit' ).
+            lo_column->set_medium_text( 'Dist Unit' ).
+            lo_column->set_long_text( 'Distance Unit' ).
+
+          CATCH cx_salv_not_found INTO lo_not_found.
+            " Column not found - ignore
+        ENDTRY.
+
+        " Enable all standard ALV functions
+        lo_functions = lo_alv->get_functions( ).
+        lo_functions->set_all( abap_true ).
+
+        " Set display settings
+        lo_display = lo_alv->get_display_settings( ).
+        lo_display->set_striped_pattern( abap_true ).
+        lo_display->set_list_header( 'Monthly Transport Truck Distance - Shipment Details' ).
+
+        " Display ALV
+        lo_alv->display( ).
+
+      CATCH cx_salv_msg INTO lo_msg.
+        MESSAGE lo_msg TYPE 'E'.
+    ENDTRY.
+  ENDMETHOD.
+
+*----------------------------------------------------------------------*
 * DISPLAY_SUMMARY
 *----------------------------------------------------------------------*
   METHOD display_summary.
@@ -1441,7 +1690,13 @@ CLASS lcl_report IMPLEMENTATION.
 
     lv_total = lines( gt_output ).
 
-    IF p_test = abap_true.
+    IF p_view = abap_true.
+      " View Details mode
+      lv_total_str = lv_total.
+      lv_det_str = gv_details_cnt.
+      CONDENSE: lv_total_str NO-GAPS, lv_det_str NO-GAPS.
+      MESSAGE s001(00) WITH 'View Details Mode:' lv_total_str 'header records,' lv_det_str 'detail records displayed.'.
+    ELSEIF p_test = abap_true.
       lv_total_str = lv_total.
       CONDENSE lv_total_str NO-GAPS.
       MESSAGE s001(00) WITH 'Test Mode:' lv_total_str 'vehicles processed. No data saved.'.
@@ -1487,6 +1742,16 @@ INITIALIZATION.
 AT SELECTION-SCREEN.
   CREATE OBJECT go_report.
   go_report->validate_input( ).
+
+*----------------------------------------------------------------------*
+* AT SELECTION-SCREEN ON s_vehl
+*----------------------------------------------------------------------*
+AT SELECTION-SCREEN ON s_vehl.
+  " Validate vehicle selection when View Details is selected
+  IF p_view = abap_true.
+    CREATE OBJECT go_report.
+    go_report->validate_vehicle_mandatory( ).
+  ENDIF.
 
 *----------------------------------------------------------------------*
 * START-OF-SELECTION
